@@ -14,6 +14,7 @@ import (
 	"github.com/datawire/dlib/dgroup"
 	"github.com/datawire/dlib/dlog"
 	systemarpc "github.com/telepresenceio/telepresence/rpc/v2/systema"
+	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/managerutil"
 	"github.com/telepresenceio/telepresence/v2/pkg/systema"
 )
 
@@ -23,7 +24,7 @@ type systemaCredentials struct {
 
 // GetRequestMetadata implements credentials.PerRPCCredentials.
 func (c *systemaCredentials) GetRequestMetadata(ctx context.Context, _ ...string) (map[string]string, error) {
-	sessionID := GetSessionID(ctx)
+	sessionID := managerutil.GetSessionID(ctx)
 
 	var apikey string
 	if sessionID != "" {
