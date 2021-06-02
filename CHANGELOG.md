@@ -1,5 +1,9 @@
 # Changelog
 
+### 2.3.1 (TBD)
+
+- Feature: DNS resolver can now be configured with respect to what IP addresses that are used, and what lookups that gets sent to the cluster.
+
 ### 2.3.0 (June 1, 2021)
 
 - Feature: Telepresence is now installable via brew
