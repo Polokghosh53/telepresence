@@ -1,5 +1,10 @@
 # Changelog
 
+### 2.3.0 TBD
+
+- Change: Outbound connections are now routed to intercepted agents.
+- Change: Inbound connection from intercepted agent now uses existing gRPC instead of new connection to manager port between 6000-7999
+
 ### 2.3.0 (June 1, 2021)
 
 - Feature: Telepresence is now installable via brew
