@@ -1,9 +1,9 @@
 # Changelog
 
-### 2.3.0 TBD
+### 2.3.1 TBD
 
 - Change: Outbound connections are now routed to intercepted agents.
-- Change: Inbound connection from intercepted agent now uses existing gRPC instead of new connection to manager port between 6000-7999
+- Change: Change: Inbound connections from an intercepted agent are now tunneled to the manager over the existing gRPC connection, instead of establishing a new connection to the manager for each inbound connection.
 
 ### 2.3.0 (June 1, 2021)
 
