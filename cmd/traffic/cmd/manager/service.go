@@ -18,6 +18,7 @@ import (
 	rpc "github.com/telepresenceio/telepresence/rpc/v2/manager"
 	"github.com/telepresenceio/telepresence/rpc/v2/systema"
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/internal/state"
+	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/managerutil"
 	"github.com/telepresenceio/telepresence/v2/pkg/connpool"
 	"github.com/telepresenceio/telepresence/v2/pkg/iputil"
 	"github.com/telepresenceio/telepresence/v2/pkg/version"
@@ -31,7 +32,7 @@ type Clock interface {
 type Manager struct {
 	ctx     context.Context
 	clock   Clock
-	env     Env
+	env     managerutil.Env
 	ID      string
 	state   *state.State
 	systema *systemaPool
@@ -47,11 +48,10 @@ func (wall) Now() time.Time {
 	return time.Now()
 }
 
-func NewManager(ctx context.Context, env Env) *Manager {
+func NewManager(ctx context.Context) *Manager {
 	ret := &Manager{
 		ctx:   ctx,
 		clock: wall{},
-		env:   env,
 		ID:    uuid.New().String(),
 		state: state.NewState(ctx),
 	}
