@@ -32,6 +32,8 @@ func TestEnvconfig(t *testing.T) {
 		ServerPort:  "8081",
 		SystemAHost: "app.getambassador.io",
 		SystemAPort: "443",
+		AgentPort:   9900,
+		Registry:    "docker.io/datawire",
 	}
 
 	testcases := map[string]struct {
@@ -40,7 +42,7 @@ func TestEnvconfig(t *testing.T) {
 	}{
 		"empty": {
 			Input:  nil,
-			Output: func(*managerutil.Env) {},
+			Output: func(e *managerutil.Env) {},
 		},
 		"simple": {
 			Input: map[string]string{
@@ -71,7 +73,7 @@ func TestEnvconfig(t *testing.T) {
 			ctx, err := managerutil.LoadEnv(context.Background())
 			actual := managerutil.GetEnv(ctx)
 			assert.Nil(err)
-			assert.Equal(expected, actual)
+			assert.Equal(&expected, actual)
 		})
 	}
 }

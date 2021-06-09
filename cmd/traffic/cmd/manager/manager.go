@@ -64,6 +64,8 @@ func Main(ctx context.Context, args ...string) error {
 		return dutil.ListenAndServeHTTPWithContext(ctx, server)
 	})
 
+	g.Go("agent-injector", mutator.ServeMutator)
+
 	g.Go("intercept-gc", func(ctx context.Context) error {
 		// Loop calling Expire
 		ticker := time.NewTicker(5 * time.Second)

@@ -16,13 +16,13 @@ import (
 	errors2 "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/datawire/ambassador/pkg/kates"
 	"github.com/datawire/dlib/dlog"
 	"github.com/datawire/dlib/dtime"
 	"github.com/telepresenceio/telepresence/rpc/v2/manager"
 	"github.com/telepresenceio/telepresence/v2/pkg/client"
+	"github.com/telepresenceio/telepresence/v2/pkg/install"
 )
 
 type installer struct {
@@ -33,14 +33,9 @@ func newTrafficManagerInstaller(kc *k8sCluster) (*installer, error) {
 	return &installer{k8sCluster: kc}, nil
 }
 
-const ManagerPortHTTP = 8081
-const managerAppName = "traffic-manager"
 const managerLicenseName = "systema-license"
 const telName = "manager"
-const domainPrefix = "telepresence.getambassador.io/"
-const annTelepresenceActions = domainPrefix + "actions"
-const agentContainerName = "traffic-agent"
-const agentAnnotationVolumeName = "traffic-annotations"
+const annTelepresenceActions = install.DomainPrefix + "actions"
 
 // this is modified in tests
 var managerNamespace = func() string {
@@ -51,7 +46,7 @@ var managerNamespace = func() string {
 }()
 
 var labelMap = map[string]string{
-	"app":          managerAppName,
+	"app":          install.ManagerAppName,
 	"telepresence": telName,
 }
 
@@ -66,7 +61,7 @@ func (ki *installer) createManagerSvc(c context.Context) (*kates.Service, error)
 		},
 		ObjectMeta: kates.ObjectMeta{
 			Namespace: managerNamespace,
-			Name:      managerAppName},
+			Name:      install.ManagerAppName},
 		Spec: kates.ServiceSpec{
 			Type:      "ClusterIP",
 			ClusterIP: "None",
@@ -74,10 +69,18 @@ func (ki *installer) createManagerSvc(c context.Context) (*kates.Service, error)
 			Ports: []kates.ServicePort{
 				{
 					Name: "api",
-					Port: ManagerPortHTTP,
+					Port: install.ManagerPortHTTP,
 					TargetPort: kates.IntOrString{
 						Type:   intstr.String,
 						StrVal: "api",
+					},
+				},
+				{
+					Name: "https",
+					Port: 443,
+					TargetPort: kates.IntOrString{
+						Type:   intstr.String,
+						StrVal: "https",
 					},
 				},
 			},
@@ -225,7 +228,7 @@ func (ki *installer) removeManagerService(c context.Context) error {
 		},
 		ObjectMeta: kates.ObjectMeta{
 			Namespace: managerNamespace,
-			Name:      managerAppName}}
+			Name:      install.ManagerAppName}}
 	dlog.Infof(c, "Deleting traffic-manager service from namespace %s", managerNamespace)
 	return ki.client.Delete(c, svc, svc)
 }
@@ -237,7 +240,7 @@ func (ki *installer) removeManagerDeployment(c context.Context) error {
 		},
 		ObjectMeta: kates.ObjectMeta{
 			Namespace: managerNamespace,
-			Name:      managerAppName,
+			Name:      install.ManagerAppName,
 		}}
 	dlog.Infof(c, "Deleting traffic-manager deployment from namespace %s", managerNamespace)
 	return ki.client.Delete(c, dep, dep)
@@ -259,150 +262,6 @@ func (ki *installer) updateDeployment(c context.Context, env client.Env, current
 	return dep, err
 }
 
-// svcPortByNameOrNumber iterates through a list of ports in a service and
-// only returns the ports that match the given nameOrNumber
-func svcPortByNameOrNumber(svc *kates.Service, nameOrNumber string) []*kates.ServicePort {
-	svcPorts := make([]*kates.ServicePort, 0)
-	ports := svc.Spec.Ports
-	var isName bool
-	validName := validation.IsValidPortName(nameOrNumber)
-	if len(validName) > 0 {
-		isName = false
-	} else {
-		isName = true
-	}
-	for i := range ports {
-		port := &ports[i]
-		matchFound := false
-		// If no nameOrNumber has been specified, we include it
-		if nameOrNumber == "" {
-			matchFound = true
-		}
-		// If the nameOrNumber is a valid name, we compare it to the
-		// name listed in the servicePort
-		if isName {
-			if nameOrNumber == port.Name {
-				matchFound = true
-			}
-		} else {
-			// Otherwise we compare it to the port number
-			givenPort, err := strconv.Atoi(nameOrNumber)
-			if err == nil && int32(givenPort) == port.Port {
-				matchFound = true
-			}
-		}
-		if matchFound {
-			svcPorts = append(svcPorts, port)
-		}
-	}
-	return svcPorts
-}
-
-func (ki *installer) findMatchingServices(c context.Context, portNameOrNumber, svcName, namespace string, labels map[string]string) ([]*kates.Service, error) {
-	// TODO: Expensive on large clusters but the problem goes away once we move the installer to the traffic-manager
-	var svcs []*kates.Service
-	if err := ki.client.List(c, kates.Query{Name: svcName, Kind: "Service", Namespace: namespace}, &svcs); err != nil {
-		return nil, err
-	}
-
-	// Returns true if selector is completely included in labels
-	labelsMatch := func(selector map[string]string) bool {
-		if len(selector) == 0 || len(labels) < len(selector) {
-			return false
-		}
-		for k, v := range selector {
-			if labels[k] != v {
-				return false
-			}
-		}
-		return true
-	}
-
-	var matching []*kates.Service
-	for _, svc := range svcs {
-		if (svcName == "" || svc.Name == svcName) && labelsMatch(svc.Spec.Selector) && len(svcPortByNameOrNumber(svc, portNameOrNumber)) > 0 {
-			matching = append(matching, svc)
-		}
-	}
-	return matching, nil
-}
-
-// findMatchingPort finds the matching container associated with portNameOrNumber
-// in the given service.
-func findMatchingPort(obj kates.Object, portNameOrNumber string, svc *kates.Service) (
-	sPort *kates.ServicePort,
-	cn *kates.Container,
-	cPortIndex int,
-	err error,
-) {
-	podTemplate, err := GetPodTemplateFromObject(obj)
-	if err != nil {
-		return nil, nil, 0, err
-	}
-
-	cns := podTemplate.Spec.Containers
-	// For now, we only support intercepting one port on a given service.
-	ports := svcPortByNameOrNumber(svc, portNameOrNumber)
-	switch numPorts := len(ports); {
-	case numPorts == 0:
-		// this may happen when portNameOrNumber is specified but none of the
-		// ports match
-		return nil, nil, 0, objErrorf(obj, "found no Service with a port that matches any container in this workload")
-
-	case numPorts > 1:
-		return nil, nil, 0, objErrorf(obj, `found matching Service with multiple matching ports.
-Please specify the Service port you want to intercept by passing the --port=local:svcPortName flag.`)
-	default:
-	}
-	port := ports[0]
-	var matchingServicePort *corev1.ServicePort
-	var matchingContainer *corev1.Container
-	var containerPortIndex int
-
-	if port.TargetPort.Type == intstr.String {
-		portName := port.TargetPort.StrVal
-		for ci := 0; ci < len(cns) && matchingContainer == nil; ci++ {
-			cn := &cns[ci]
-			for pi := range cn.Ports {
-				if cn.Ports[pi].Name == portName {
-					matchingServicePort = port
-					matchingContainer = cn
-					containerPortIndex = pi
-					break
-				}
-			}
-		}
-	} else {
-		portNum := port.TargetPort.IntVal
-		// Here we are using containerPortIndex <=0 instead of matchingContainer == nil because if a
-		// container has no ports, we want to use it but we don't want
-		// to break out of the loop looking at containers in case there
-		// is a better fit.  Currently, that is a container where the
-		// ContainerPort matches the targetPort in the service.
-		for ci := 0; ci < len(cns) && containerPortIndex <= 0; ci++ {
-			cn := &cns[ci]
-			if len(cn.Ports) == 0 {
-				matchingServicePort = port
-				matchingContainer = cn
-				containerPortIndex = -1
-			}
-			for pi := range cn.Ports {
-				if cn.Ports[pi].ContainerPort == portNum {
-					matchingServicePort = port
-					matchingContainer = cn
-					containerPortIndex = pi
-					break
-				}
-			}
-		}
-	}
-
-	if matchingServicePort == nil {
-		return nil, nil, 0, objErrorf(obj, "found no Service with a port that matches any container in this workload")
-	}
-	return matchingServicePort, matchingContainer, containerPortIndex, nil
-}
-
 // Finds the Referenced Service in an objects' annotations
 func (ki *installer) getSvcFromObjAnnotation(c context.Context, obj kates.Object) (*kates.Service, error) {
 	var actions workloadActions
@@ -412,11 +271,11 @@ func (ki *installer) getSvcFromObjAnnotation(c context.Context, obj kates.Object
 	}
 	namespace := obj.GetNamespace()
 	if !annotationsFound {
-		return nil, objErrorf(obj, "annotations[%q]: annotation is not set", annTelepresenceActions)
+		return nil, install.ObjErrorf(obj, "annotations[%q]: annotation is not set", annTelepresenceActions)
 	}
 	svcName := actions.ReferencedService
 	if svcName == "" {
-		return nil, objErrorf(obj, "annotations[%q]: field \"ReferencedService\" is not set", annTelepresenceActions)
+		return nil, install.ObjErrorf(obj, "annotations[%q]: field \"ReferencedService\" is not set", annTelepresenceActions)
 	}
 
 	svc, err := ki.findSvc(c, namespace, svcName)
@@ -424,7 +283,7 @@ func (ki *installer) getSvcFromObjAnnotation(c context.Context, obj kates.Object
 		return nil, err
 	}
 	if svc == nil {
-		return nil, objErrorf(obj, "annotations[%q]: field \"ReferencedService\" references unfound service %q", annTelepresenceActions, svcName)
+		return nil, install.ObjErrorf(obj, "annotations[%q]: field \"ReferencedService\" references unfound service %q", annTelepresenceActions, svcName)
 	}
 	return svc, nil
 }
@@ -444,7 +303,7 @@ func checkSvcSame(c context.Context, obj kates.Object, svcName, portNameOrNumber
 		// then the service to be used with the intercept has changed
 		curSvc := actions.ReferencedService
 		if svcName != "" && curSvc != svcName {
-			return objErrorf(obj, "associated Service changed from %q to %q", curSvc, svcName)
+			return install.ObjErrorf(obj, "associated Service changed from %q to %q", curSvc, svcName)
 		}
 
 		// If the portNameOrNumber passed in doesn't match the referenced service
@@ -454,7 +313,7 @@ func checkSvcSame(c context.Context, obj kates.Object, svcName, portNameOrNumber
 			curSvcPortName := actions.ReferencedServicePortName
 			curSvcPort := actions.ReferencedServicePort
 			if curSvcPortName != portNameOrNumber && curSvcPort != portNameOrNumber {
-				return objErrorf(obj, "port changed from %q to %q", curSvcPort, portNameOrNumber)
+				return install.ObjErrorf(obj, "port changed from %q to %q", curSvcPort, portNameOrNumber)
 			}
 		}
 	}
@@ -493,14 +352,25 @@ func (ki *installer) ensureAgent(c context.Context, namespace, name, svcName, po
 		return "", "", fmt.Errorf("unsupported workload kind %q, cannot ensure agent", kind)
 	}
 
-	podTemplate, err := GetPodTemplateFromObject(obj)
+	podTemplate, err := install.GetPodTemplateFromObject(obj)
 	if err != nil {
 		return "", "", err
 	}
+
+	var svc *kates.Service
+	if a := podTemplate.ObjectMeta.Annotations; a != nil && a[install.InjectAnnotation] == "enabled" {
+		// agent is injected using a mutating webhook. Get its service and skip the rest
+		svc, err = install.FindMatchingService(c, ki.client, portNameOrNumber, svcName, namespace, podTemplate.Labels)
+		if err != nil {
+			return "", "", err
+		}
+		return string(svc.GetUID()), kind, nil
+	}
+
 	var agentContainer *kates.Container
 	for i := range podTemplate.Spec.Containers {
 		container := &podTemplate.Spec.Containers[i]
-		if container.Name == agentContainerName {
+		if container.Name == install.AgentContainerName {
 			agentContainer = container
 			break
 		}
@@ -514,40 +384,16 @@ telepresence uninstall --agent %s This will cancel any intercepts that
 already exist for this service`, kind, obj.GetName())
 		return "", "", errors.Wrap(err, msg)
 	}
-	var svc *kates.Service
 
 	switch {
 	case agentContainer == nil:
 		dlog.Infof(c, "no agent found for %s %s.%s", kind, name, namespace)
 		dlog.Infof(c, "Using port name or number %q", portNameOrNumber)
-		matchingSvcs, err := ki.findMatchingServices(c, portNameOrNumber, svcName, namespace, podTemplate.Labels)
+		matchingSvc, err := install.FindMatchingService(c, ki.client, portNameOrNumber, svcName, namespace, podTemplate.Labels)
 		if err != nil {
 			return "", "", err
 		}
-
-		switch numSvcs := len(matchingSvcs); {
-		case numSvcs == 0:
-			errMsg := fmt.Sprintf("Found no services with a selector matching labels %v", podTemplate.Labels)
-			if portNameOrNumber != "" {
-				errMsg += fmt.Sprintf(" and a port referenced by name or port number %s", portNameOrNumber)
-			}
-			return "", "", errors.New(errMsg)
-		case numSvcs > 1:
-			svcNames := make([]string, 0, numSvcs)
-			for _, svc := range matchingSvcs {
-				svcNames = append(svcNames, svc.Name)
-			}
-
-			errMsg := fmt.Sprintf("Found multiple services with a selector matching labels %v in namespace %s, use --service and one of: %s",
-				podTemplate.Labels, namespace, strings.Join(svcNames, ","))
-			if portNameOrNumber != "" {
-				errMsg += fmt.Sprintf(" and a port referenced by name or port number %s", portNameOrNumber)
-			}
-			return "", "", errors.New(errMsg)
-		default:
-		}
-
-		obj, svc, err = addAgentToWorkload(c, portNameOrNumber, agentImageName, obj, matchingSvcs[0])
+		obj, svc, err = addAgentToWorkload(c, portNameOrNumber, agentImageName, obj, matchingSvc)
 		if err != nil {
 			return "", "", err
 		}
@@ -558,7 +404,7 @@ already exist for this service`, kind, obj.GetName())
 			return "", "", err
 		} else if !ok {
 			// This can only happen if someone manually tampered with the annTelepresenceActions annotation
-			return "", "", objErrorf(obj, "annotations[%q]: annotation is not set", annTelepresenceActions)
+			return "", "", install.ObjErrorf(obj, "annotations[%q]: annotation is not set", annTelepresenceActions)
 		}
 
 		dlog.Debugf(c, "Updating agent for %s %s.%s", kind, name, namespace)
@@ -748,12 +594,6 @@ func (ki *installer) refreshReplicaSet(c context.Context, name, namespace string
 	return nil
 }
 
-func objErrorf(obj kates.Object, format string, args ...interface{}) error {
-	return fmt.Errorf("%s name=%q namespace=%q: %w",
-		obj.GetObjectKind().GroupVersionKind().Kind, obj.GetName(), obj.GetNamespace(),
-		fmt.Errorf(format, args...))
-}
-
 func getAnnotation(obj kates.Object, data completeAction) (bool, error) {
 	ann := obj.GetAnnotations()
 	if ann == nil {
@@ -764,20 +604,20 @@ func getAnnotation(obj kates.Object, data completeAction) (bool, error) {
 		return false, nil
 	}
 	if err := data.UnmarshalAnnotation(ajs); err != nil {
-		return false, objErrorf(obj, "annotations[%q]: unable to parse annotation: %q: %w",
+		return false, install.ObjErrorf(obj, "annotations[%q]: unable to parse annotation: %q: %w",
 			annTelepresenceActions, ajs, err)
 	}
 
 	annV, err := data.TelVersion()
 	if err != nil {
-		return false, objErrorf(obj, "annotations[%q]: unable to parse semantic version %q: %w",
+		return false, install.ObjErrorf(obj, "annotations[%q]: unable to parse semantic version %q: %w",
 			annTelepresenceActions, ajs, err)
 	}
 	ourV := client.Semver()
 
 	// Compare major and minor versions. 100% backward compatibility is assumed and greater patch versions are allowed
 	if ourV.Major < annV.Major || ourV.Major == annV.Major && ourV.Minor < annV.Minor {
-		return false, objErrorf(obj, "annotations[%q]: the version in the annotation (%v) is more recent than this binary's version (%v)",
+		return false, install.ObjErrorf(obj, "annotations[%q]: the version in the annotation (%v) is more recent than this binary's version (%v)",
 			annTelepresenceActions,
 			annV, ourV)
 	}
@@ -808,7 +648,7 @@ func undoObjectMods(c context.Context, obj kates.Object) (string, error) {
 		return "", err
 	}
 	if !ok {
-		return "", objErrorf(obj, "agent is not installed")
+		return "", install.ObjErrorf(obj, "agent is not installed")
 	}
 
 	if err = actions.Undo(obj); err != nil {
@@ -860,13 +700,15 @@ func addAgentToWorkload(
 	*kates.Service,
 	error,
 ) {
-	_, err := GetPodTemplateFromObject(object)
+	podTemplate, err := install.GetPodTemplateFromObject(object)
 	if err != nil {
 		return nil, nil, err
 	}
-	servicePort, container, containerPortIndex, err := findMatchingPort(object, portNameOrNumber, matchingService)
+
+	cns := podTemplate.Spec.Containers
+	servicePort, container, containerPortIndex, err := install.FindMatchingPort(cns, portNameOrNumber, matchingService)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, install.ObjErrorf(object, err.Error())
 	}
 	if matchingService.Spec.ClusterIP == "None" {
 		dlog.Debugf(c,
@@ -925,7 +767,7 @@ func addAgentToWorkload(
 		}
 	}
 	if containerPort.Number == 0 {
-		return nil, nil, objErrorf(object, "unable to add: the container port cannot be determined")
+		return nil, nil, install.ObjErrorf(object, "unable to add: the container port cannot be determined")
 	}
 	if containerPort.Name == "" {
 		containerPort.Name = fmt.Sprintf("tx-%d", containerPort.Number)
@@ -1023,41 +865,65 @@ func addAgentToWorkload(
 func (ki *installer) managerDeployment(c context.Context, env client.Env, addLicense bool) *kates.Deployment {
 	replicas := int32(1)
 
-	var containerEnv []corev1.EnvVar
-
-	containerEnv = append(containerEnv, corev1.EnvVar{Name: "LOG_LEVEL", Value: "info"})
-	if env.SystemAHost != "" {
-		containerEnv = append(containerEnv, corev1.EnvVar{Name: "SYSTEMA_HOST", Value: env.SystemAHost})
-	}
-	if env.SystemAPort != "" {
-		containerEnv = append(containerEnv, corev1.EnvVar{Name: "SYSTEMA_PORT", Value: env.SystemAPort})
-	}
 	clusterID := ki.getClusterId(c)
-	containerEnv = append(containerEnv, corev1.EnvVar{Name: "CLUSTER_ID", Value: clusterID})
+	var containerEnv = []corev1.EnvVar{
+		{Name: "LOG_LEVEL", Value: "info"},
+		{Name: "SYSTEMA_HOST", Value: env.SystemAHost},
+		{Name: "SYSTEMA_PORT", Value: env.SystemAPort},
+		{Name: "CLUSTER_ID", Value: clusterID},
+		{Name: "TELEPRESENCE_REGISTRY", Value: env.Registry},
+
+		// Manager needs to know its own namespace so that it can propagate that when
+		// to agents when injecting them
+		{
+			Name: "MANAGER_NAMESPACE",
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{
+					FieldPath: "metadata.namespace",
+				},
+			},
+		},
+	}
+	if env.AgentImage != "" {
+		containerEnv = append(containerEnv, corev1.EnvVar{Name: "TELEPRESENCE_AGENT_IMAGE", Value: env.AgentImage})
+	}
+
 	// If addLicense is true, we mount the secret as a volume into the traffic-manager
 	// and then we mount that volume to a path in the container that the traffic-manager
 	// knows about and can read from.
-	var licenseVolume []corev1.Volume
-	var licenseVolumeMount []corev1.VolumeMount
+	var volumes []corev1.Volume
+	var volumeMounts []corev1.VolumeMount
 	if addLicense {
-		licenseVolume = []corev1.Volume{
-			{
-				Name: "license",
-				VolumeSource: corev1.VolumeSource{
-					Secret: &corev1.SecretVolumeSource{
-						SecretName: managerLicenseName,
-					},
+		volumes = append(volumes, corev1.Volume{
+			Name: "license",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: managerLicenseName,
 				},
 			},
-		}
-		licenseVolumeMount = []corev1.VolumeMount{
-			{
-				Name:      "license",
-				ReadOnly:  true,
-				MountPath: "/home/telepresence/",
-			},
-		}
+		})
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      "license",
+			ReadOnly:  true,
+			MountPath: "/home/telepresence/",
+		})
 	}
+
+	optional := true
+	volumes = append(volumes, corev1.Volume{
+		Name: "tls",
+		VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{
+				SecretName: install.AgentInjectorTLSName,
+				Optional:   &optional,
+			},
+		},
+	})
+	volumeMounts = append(volumeMounts, corev1.VolumeMount{
+		Name:      "tls",
+		ReadOnly:  true,
+		MountPath: "/var/run/secrets/tls",
+	})
 
 	return &kates.Deployment{
 		TypeMeta: kates.TypeMeta{
@@ -1065,7 +931,7 @@ func (ki *installer) managerDeployment(c context.Context, env client.Env, addLic
 		},
 		ObjectMeta: kates.ObjectMeta{
 			Namespace: managerNamespace,
-			Name:      managerAppName,
+			Name:      install.ManagerAppName,
 			Labels:    labelMap,
 		},
 		Spec: appsv1.DeploymentSpec{
@@ -1080,18 +946,22 @@ func (ki *installer) managerDeployment(c context.Context, env client.Env, addLic
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{
 						{
-							Name:  managerAppName,
+							Name:  install.ManagerAppName,
 							Image: managerImageName(env),
 							Env:   containerEnv,
 							Ports: []corev1.ContainerPort{
 								{
 									Name:          "api",
-									ContainerPort: ManagerPortHTTP,
+									ContainerPort: install.ManagerPortHTTP,
+								},
+								{
+									Name:          "https",
+									ContainerPort: install.ManagerPortHTTPS,
 								},
 							},
-							VolumeMounts: licenseVolumeMount,
+							VolumeMounts: volumeMounts,
 						}},
-					Volumes:       licenseVolume,
+					Volumes:       volumes,
 					RestartPolicy: corev1.RestartPolicyAlways,
 				},
 			},
@@ -1102,7 +972,7 @@ func (ki *installer) managerDeployment(c context.Context, env client.Env, addLic
 func (ki *installer) findManagerSvc(c context.Context) (*kates.Service, error) {
 	svc := &kates.Service{
 		TypeMeta:   kates.TypeMeta{Kind: "Service"},
-		ObjectMeta: kates.ObjectMeta{Name: managerAppName, Namespace: managerNamespace},
+		ObjectMeta: kates.ObjectMeta{Name: install.ManagerAppName, Namespace: managerNamespace},
 	}
 	if err := ki.client.Get(c, svc, svc); err != nil {
 		return nil, err
@@ -1131,12 +1001,12 @@ func (ki *installer) ensureManager(c context.Context, env client.Env) error {
 		dlog.Info(c, "License found and adding to traffic-manager")
 		addLicense = true
 	}
-	dep, err := ki.findDeployment(c, managerNamespace, managerAppName)
+	dep, err := ki.findDeployment(c, managerNamespace, install.ManagerAppName)
 	if err != nil {
 		if errors2.IsNotFound(err) {
 			err = ki.createManagerDeployment(c, env, addLicense)
 			if err == nil {
-				err = ki.waitForApply(c, managerNamespace, managerAppName, nil)
+				err = ki.waitForApply(c, managerNamespace, install.ManagerAppName, nil)
 			}
 		}
 		return err
@@ -1153,11 +1023,11 @@ func (ki *installer) ensureManager(c context.Context, env client.Env) error {
 		}
 	}
 	if upToDate {
-		dlog.Infof(c, "%s.%s is up-to-date. Image: %s", managerAppName, managerNamespace, managerImageName(env))
+		dlog.Infof(c, "%s.%s is up-to-date. Image: %s", install.ManagerAppName, managerNamespace, managerImageName(env))
 	} else {
 		_, err = ki.updateDeployment(c, env, dep)
 		if err == nil {
-			err = ki.waitForApply(c, managerNamespace, managerAppName, dep)
+			err = ki.waitForApply(c, managerNamespace, install.ManagerAppName, dep)
 		}
 	}
 	return err

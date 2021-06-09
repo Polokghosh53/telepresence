@@ -8,10 +8,14 @@ import (
 
 type Env struct {
 	User        string `env:"USER,default="`
+	AgentImage  string `env:"TELEPRESENCE_AGENT_IMAGE,default="`
+	AgentPort   int32  `env:"TELEPRESENCE_AGENT_PORT,default=9900"`
+	Namespace   string `env:"MANAGER_NAMESPACE,default="`
 	ServerHost  string `env:"SERVER_HOST,default="`
 	ServerPort  string `env:"SERVER_PORT,default=8081"`
 	SystemAHost string `env:"SYSTEMA_HOST,default=app.getambassador.io"`
 	SystemAPort string `env:"SYSTEMA_PORT,default=443"`
+	Registry    string `env:"TELEPRESENCE_REGISTRY,default=docker.io/datawire"`
 	ClusterID   string `env:"CLUSTER_ID,default="`
 }
 
