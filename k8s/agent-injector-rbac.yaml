@@ -1,12 +1,14 @@
-# This should be the minium RBAC that is needed for users (not operators) to
-# use telepresence.  These objects are used in a portion of our tests to
-# determine if we have changed the minimal rbac profile. If you need to change
-# this file, you must also change it in the docs.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: traffic-manager
+  namespace: ambassador
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: telepresence-agent-injector
+  name: traffic-manager
 rules:
 - apiGroups:
   - ""
@@ -14,14 +16,14 @@ rules:
   verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
+kind: ClusterRoleBinding
 metadata:
-  name: telepresence-agent-injector
+  name: traffic-manager
 subjects:
-- kind: User
-  name: system:serviceaccount:ambassador:default
-  apiGroup: rbac.authorization.k8s.io
+- kind: ServiceAccount
+  name: traffic-manager
+  namespace: ambassador
 roleRef:
   kind: ClusterRole
-  name: telepresence-agent-injector
+  name: traffic-manager
   apiGroup: rbac.authorization.k8s.io
